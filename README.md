@@ -4,6 +4,13 @@
 
 
 
+## 📊 Interactive Dashboard
+
+Explore the full interactive Tableau dashboard here:  
+👉 [NPA Banking Analysis – Tableau Public](https://public.tableau.com/views/NPABankingAnalysis/Dashboard1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link)
+
+
+
 ## Objective
 
 Examines whether the Insolvency and Bankruptcy Code (IBC) 2016 had a 
