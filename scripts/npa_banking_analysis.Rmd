@@ -1,0 +1,820 @@
+---
+title: "NPA Banking Analysis: Trends, IBC Impact & Recovery (2012–2025)"
+author: "Pratham Kanbargi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 10,
+  fig.height = 6
+)
+```
+
+---
+
+## 1. Project Overview
+
+Non-Performing Assets (NPAs) are loans where borrowers have stopped making
+interest or principal repayments for 90 days or more. High NPA levels signal
+stress in the banking system, tie up capital, and constrain credit growth.
+
+This project analyses NPA trends across Indian bank groups from 2012 to 2025,
+with three core questions:
+
+- How did NPA levels evolve across Public Sector, Private Sector, and Foreign Banks?
+- Did the Insolvency and Bankruptcy Code (IBC), enacted in 2016, produce a
+  statistically measurable reduction in NPA ratios?
+- Which bank group recovered fastest after the NPA peak (2017–2020)?
+
+**Data sources (Reserve Bank of India):**
+
+- *Statement of NPAs of Scheduled Commercial Banks* — gross NPA data by bank
+  and bank group, 2012–2025
+- *Gross and Net NPA of Scheduled Commercial Banks* — net NPA and advances
+  data by bank group, 2011–2024
+
+---
+
+## 2. Setup
+
+```{r libraries}
+# Install packages if not already present
+# install.packages(c('tidyverse', 'dplyr', 'skimr', 'janitor', 'readxl'))
+
+library(tidyverse)
+library(skimr)
+library(dplyr)
+library(janitor)
+library(readr)
+library(readxl)
+library(ggplot2)
+```
+
+---
+
+## 3. Data Loading
+
+```{r load-data}
+NPA_13_25 <- read_excel(
+  "/kaggle/input/datasets/compfigggfg/npa-from-2013-2025/NPA 13-25.xlsx"
+)
+
+Gross_and_net_NPA <- read_excel(
+  "/kaggle/input/datasets/compfigggfg/gross-and-net-npa/Gross and net NPA.xlsx"
+)
+```
+
+---
+
+## 4. Exploratory Data Analysis
+
+### 4.1 NPA_13_25 Overview
+
+```{r eda-npa1}
+cat("=== NPA_13_25 ===\n")
+dim(NPA_13_25)
+head(NPA_13_25, 10)
+names(NPA_13_25)
+
+cat("\nUnique Years:\n")
+sort(unique(NPA_13_25$Year))
+
+cat("\nUnique Banks:\n")
+sort(unique(NPA_13_25$Banks))
+```
+
+### 4.2 Gross_and_net_NPA Overview
+
+The second dataset is a multi-block Excel file — each bank group's data is
+stacked vertically with repeated header rows. Raw output is shown here for
+transparency.
+
+```{r eda-gn, results='hide'}
+cat("=== Gross_and_net_NPA ===\n")
+dim(Gross_and_net_NPA)
+names(Gross_and_net_NPA)
+head(Gross_and_net_NPA, 15)
+print(Gross_and_net_NPA, n = Inf, width = Inf)
+```
+
+### 4.3 Data Quality Checks — NPA_13_25
+
+```{r quality-npa1}
+cat("--- Check numeric columns stored as chr ---\n")
+sapply(NPA_13_25, class)
+
+cat("\n--- NA counts per column ---\n")
+NPA_13_25 |>
+  dplyr::summarise(dplyr::across(dplyr::everything(), ~sum(is.na(.))))
+
+cat("\n--- Blank/empty strings in character columns ---\n")
+NPA_13_25 |>
+  dplyr::summarise(dplyr::across(
+    dplyr::where(is.character),
+    ~sum(. == "" | . == "N.A." | grepl("^\\s*$", .), na.rm = TRUE)
+  ))
+
+cat("\n--- Sample values: Gross NPA ratio column ---\n")
+head(NPA_13_25$`Gross NPAs to Gross Advances Ratio (%)`, 20)
+```
+
+### 4.4 Group-Level Row Coverage
+
+```{r group-coverage}
+group_labels <- c(
+  "ALL SCHEDULED COMMERCIAL BANKS", "PUBLIC SECTOR BANKS",
+  "NATIONALISED BANKS", "STATE BANK OF INDIA AND ITS ASSOCIATES",
+  "PRIVATE SECTOR BANKS", "FOREIGN BANKS", "SMALL FINANCE BANKS"
+)
+
+NPA_13_25 |>
+  dplyr::filter(Banks %in% group_labels) |>
+  dplyr::count(Banks, Year) |>
+  tidyr::pivot_wider(names_from = Year, values_from = n) |>
+  print(width = Inf)
+```
+
+### 4.5 Banks with Incomplete Year Coverage (Mergers / Closures)
+
+```{r bank-coverage}
+bank_year_coverage <- NPA_13_25 |>
+  filter(!Banks %in% group_labels) |>
+  count(Banks) |>
+  filter(n < 14) |>
+  arrange(n)
+
+cat("Banks with incomplete year coverage (merged/acquired/new):\n")
+print(bank_year_coverage, n = Inf)
+```
+
+### 4.6 Year Labelling Check
+
+The `Year` column stores the end year of each fiscal period. Year 2012 means
+fiscal year 2011–12 (end-March 2012).
+
+```{r year-check}
+cat("--- What does year 2012 represent? ---\n")
+NPA_13_25 |>
+  filter(Year == 2012, Banks == "ALL SCHEDULED COMMERCIAL BANKS")
+```
+
+### 4.7 Gross_and_net_NPA Structure
+
+```{r gn-structure}
+cat("--- Last 3 rows (footnote) ---\n")
+tail(Gross_and_net_NPA, 3)
+
+cat("\n--- Rows 3–17 (first data block) ---\n")
+Gross_and_net_NPA[3:17, ]
+
+cat("\nRow 4 full values (2023-24, All SCBs):\n")
+Gross_and_net_NPA[4, ] |> t()
+
+cat("\nRow 3 full values (header row):\n")
+Gross_and_net_NPA[3, ] |> t()
+
+cat("\nFootnote text:\n")
+cat(Gross_and_net_NPA[[113, 1]])
+
+cat("\n\n--- Old Private Sector Banks block (rows 42–54) ---\n")
+Gross_and_net_NPA[42:54, ] |> print(width = Inf)
+```
+
+### 4.8 Year Alignment Verification
+
+Confirming that `NPA_13_25$Year` maps to the end year of the fiscal period
+in `Gross_and_net_NPA`.
+
+```{r year-alignment}
+scb_npa1 <- NPA_13_25 |>
+  dplyr::filter(Banks == "ALL SCHEDULED COMMERCIAL BANKS") |>
+  dplyr::transmute(
+    year_npa1    = Year,
+    gross_adv_npa1 = round(as.numeric(`Gross Advances`))
+  )
+
+scb_gn <- Gross_and_net_NPA |>
+  dplyr::filter(grepl("^\\d{4}-\\d{2}$", `Year (end-March)`)) |>
+  dplyr::slice(1:14) |>
+  dplyr::transmute(
+    fiscal_yr     = `Year (end-March)`,
+    year_as_endyr = as.integer(substr(`Year (end-March)`, 1, 4)) + 1L,
+    gross_adv_gn  = round(as.numeric(`Gross Advances`))
+  )
+
+dplyr::left_join(scb_npa1, scb_gn, by = c("year_npa1" = "year_as_endyr")) |>
+  dplyr::select(year_npa1, fiscal_yr, gross_adv_npa1, gross_adv_gn) |>
+  print(n = Inf)
+```
+
+---
+
+## 5. Data Cleaning & Integration
+
+### 5.1 Step 1 — Extract Group Rows from NPA_13_25
+
+```{r step1}
+npa1_groups <- NPA_13_25 |>
+  filter(Banks %in% c(
+    "ALL SCHEDULED COMMERCIAL BANKS", "NATIONALISED BANKS",
+    "PRIVATE SECTOR BANKS", "PUBLIC SECTOR BANKS", "FOREIGN BANKS"
+  )) |>
+  transmute(
+    year  = as.integer(Year),
+    bank  = case_when(
+      Banks == "ALL SCHEDULED COMMERCIAL BANKS" ~ "All Scheduled Commercial Banks",
+      Banks == "NATIONALISED BANKS"             ~ "Nationalised Banks",
+      Banks == "PRIVATE SECTOR BANKS"           ~ "Private Sector Banks",
+      Banks == "PUBLIC SECTOR BANKS"            ~ "Public Sector Banks",
+      Banks == "FOREIGN BANKS"                  ~ "Foreign Banks"
+    ),
+    gross_advances = as.numeric(`Gross Advances`),
+    gross_npa      = as.numeric(`Gross NPAs`),
+    gross_npa_pct  = round(as.numeric(`Gross NPAs to Gross Advances Ratio (%)`), 2)
+  )
+
+cat("Groups and year coverage:\n")
+npa1_groups |>
+  count(bank, year) |>
+  tidyr::pivot_wider(names_from = year, values_from = n)
+```
+
+### 5.2 Step 2 — Parse Gross_and_net_NPA into Labelled Blocks
+
+The raw file is a vertically-stacked multi-block Excel export. Each bank
+group's data block is preceded by a section header row. We identify the row
+number of each header to assign block labels.
+
+```{r step2}
+gn_raw <- Gross_and_net_NPA |>
+  rename(
+    year_str             = `Year (end-March)`,
+    gross_advances2      = `Gross Advances`,
+    net_advances         = `Net Advances`,
+    gross_npa2           = `Non-Performing Assets (NPAs)`,
+    gross_npa_pct_adv    = ...5,
+    gross_npa_pct_assets = ...6,
+    net_npa              = ...7,
+    net_npa_pct_adv      = ...8,
+    net_npa_pct_assets   = ...9
+  ) |>
+  mutate(row_n = row_number())
+
+# Find section boundary row numbers
+label_rows <- gn_raw |>
+  filter(year_str %in% c(
+    "Public Sector Banks", "Old Private Sector Banks",
+    "Private Sector Banks *", "Foreign Banks In India",
+    "Small Finance Banks"
+  )) |>
+  select(row_n, year_str)
+
+r_psb  <- label_rows$row_n[label_rows$year_str == "Public Sector Banks"]
+r_opvt <- label_rows$row_n[label_rows$year_str == "Old Private Sector Banks"]
+r_pvt  <- label_rows$row_n[label_rows$year_str == "Private Sector Banks *"]
+r_forb <- label_rows$row_n[label_rows$year_str == "Foreign Banks In India"]
+r_sfb  <- label_rows$row_n[label_rows$year_str == "Small Finance Banks"]
+
+gn_net <- gn_raw |>
+  mutate(bank = case_when(
+    row_n < r_psb                     ~ "All Scheduled Commercial Banks",
+    row_n >= r_psb  & row_n < r_opvt ~ "Public Sector Banks",
+    row_n >= r_opvt & row_n < r_pvt  ~ "Old Private Sector Banks",
+    row_n >= r_pvt  & row_n < r_forb ~ "Private Sector Banks",
+    row_n >= r_forb & row_n < r_sfb  ~ "Foreign Banks",
+    row_n >= r_sfb                    ~ "Small Finance Banks"
+  )) |>
+  filter(grepl("^\\d{4}-\\d{2}$", year_str)) |>
+  filter(bank %in% c(
+    "All Scheduled Commercial Banks", "Public Sector Banks",
+    "Private Sector Banks", "Foreign Banks"
+  )) |>
+  transmute(
+    year        = as.integer(substr(year_str, 1, 4)) + 1L,
+    bank,
+    net_advances = round(as.numeric(net_advances), 2),
+    net_npa      = round(as.numeric(net_npa), 2),
+    net_npa_pct  = round(as.numeric(net_npa_pct_adv), 2)
+  )
+
+cat("Net NPA data coverage:\n")
+gn_net |>
+  count(bank, year) |>
+  tidyr::pivot_wider(names_from = year, values_from = n)
+```
+
+### 5.3 Step 3 — Join and Build Final Table
+
+```{r step3}
+npa_clean <- npa1_groups |>
+  left_join(gn_net, by = c("year", "bank")) |>
+  select(year, bank, gross_advances, gross_npa,
+         net_advances, net_npa, gross_npa_pct, net_npa_pct) |>
+  arrange(desc(year), bank)
+
+cat("Final table dimensions:", dim(npa_clean), "\n\n")
+cat("Rows per bank:\n")
+npa_clean |> count(bank)
+
+cat("\nNA summary:\n")
+npa_clean |> summarise(across(everything(), ~sum(is.na(.))))
+
+cat("\nRows with missing net data:\n")
+npa_clean |>
+  filter(is.na(net_advances)) |>
+  select(year, bank, gross_advances, net_advances)
+
+npa_final <- npa_clean
+print(npa_final, n = 56, width = Inf)
+
+write.csv(npa_final, "/kaggle/working/npa_final.csv", row.names = FALSE)
+cat("Exported successfully.\n")
+```
+
+---
+
+## 6. Preliminary Visualisations
+
+```{r plot-gross-trend}
+ggplot(npa_final, aes(x = year, y = gross_npa_pct, color = bank)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Gross NPA % of Gross Advances by Bank Group",
+    x = "Year", y = "Gross NPA (%)", color = NULL
+  )
+
+ggsave("/kaggle/working/gross_npa_trend.png", width = 10, height = 6, dpi = 150)
+```
+
+```{r plot-net-trend}
+ggplot(
+  npa_final |> dplyr::filter(!is.na(net_npa_pct)),
+  aes(x = year, y = net_npa_pct, color = bank)
+) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Net NPA % of Net Advances by Bank Group",
+    x = "Year", y = "Net NPA (%)", color = NULL
+  )
+
+ggsave("/kaggle/working/net_npa_trend.png", width = 10, height = 6, dpi = 150)
+```
+
+---
+
+## 7. Pre vs Post IBC Analysis
+
+The Insolvency and Bankruptcy Code (IBC) was enacted in May 2016 to provide a
+time-bound resolution process for stressed assets. We compare the mean Gross
+NPA % in the pre-IBC period (2012–2016) against the post-IBC period (2017–2023)
+for each bank group.
+
+```{r ibc-periods}
+npa_periods <- npa_final |>
+  filter(year >= 2012, year <= 2023) |>
+  mutate(period = if_else(
+    year <= 2016, "Pre-IBC (2012-16)", "Post-IBC (2017-23)"
+  ))
+
+mean_by_period <- npa_periods |>
+  group_by(bank, period) |>
+  summarise(
+    n          = n(),
+    mean_gross = round(mean(gross_npa_pct, na.rm = TRUE), 2),
+    .groups    = "drop"
+  ) |>
+  tidyr::pivot_wider(names_from = period, values_from = c(mean_gross, n))
+
+cat("Mean Gross NPA % by Bank Group and Period:\n")
+mean_by_period
+```
+
+```{r plot-ibc}
+ggplot(
+  npa_periods |> filter(!is.na(gross_npa_pct)),
+  aes(x = year, y = gross_npa_pct, color = bank)
+) +
+  annotate("rect", xmin = 2012, xmax = 2016.5,
+           ymin = -Inf, ymax = Inf, fill = "steelblue", alpha = 0.08) +
+  annotate("rect", xmin = 2016.5, xmax = 2023,
+           ymin = -Inf, ymax = Inf, fill = "tomato", alpha = 0.08) +
+  annotate("text", x = 2014, y = 14.8,
+           label = "Pre-IBC", size = 3.5, color = "steelblue4") +
+  annotate("text", x = 2020, y = 14.8,
+           label = "Post-IBC", size = 3.5, color = "tomato4") +
+  geom_vline(xintercept = 2016.5, linetype = "dashed", color = "grey40") +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2012:2023) +
+  labs(
+    title = "Gross NPA % by Bank Group: Pre vs Post IBC (2016)",
+    x = "Year", y = "Gross NPA (% of Gross Advances)", color = NULL
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("/kaggle/working/pre_post_ibc.png", width = 10, height = 6, dpi = 150)
+```
+
+### 7.1 Statistical Test — Wilcoxon Rank-Sum
+
+With only 5 pre-IBC and 7 post-IBC observations per group, parametric tests
+are inappropriate. The Wilcoxon rank-sum (Mann-Whitney U) test is used instead.
+Groups tested: All SCBs, Foreign Banks, Private Sector Banks — the three groups
+with complete data in both periods.
+
+```{r wilcoxon}
+testable_groups <- c(
+  "All Scheduled Commercial Banks", "Foreign Banks", "Private Sector Banks"
+)
+
+test_results <- map_dfr(testable_groups, function(grp) {
+  pre  <- npa_periods |>
+    filter(bank == grp, period == "Pre-IBC (2012-16)") |>
+    pull(gross_npa_pct)
+  post <- npa_periods |>
+    filter(bank == grp, period == "Post-IBC (2017-23)") |>
+    pull(gross_npa_pct)
+
+  wt <- wilcox.test(post, pre, alternative = "two.sided", exact = FALSE)
+
+  tibble(
+    bank        = grp,
+    mean_pre    = round(mean(pre), 2),
+    mean_post   = round(mean(post), 2),
+    change      = round(mean(post) - mean(pre), 2),
+    W_statistic = wt$statistic,
+    p_value     = round(wt$p.value, 4)
+  )
+})
+
+test_results
+
+write.csv(test_results, "/kaggle/working/wilcoxon_test_results.csv",
+          row.names = FALSE)
+```
+
+> **Interpretation:** A p-value below 0.05 indicates the difference in NPA
+> ratios between pre- and post-IBC periods is statistically significant.
+> The `change` column shows the direction: negative = improvement post-IBC.
+
+---
+
+## 8. NPA Peak & Recovery Analysis
+
+### 8.1 YoY Change and Peak Identification
+
+```{r peak}
+npa_yoy <- npa_final |>
+  filter(!is.na(gross_npa_pct)) |>
+  arrange(bank, year) |>
+  group_by(bank) |>
+  mutate(yoy_change = gross_npa_pct - lag(gross_npa_pct)) |>
+  ungroup()
+
+peaks <- npa_yoy |>
+  filter(year >= 2017, year <= 2021) |>
+  group_by(bank) |>
+  slice_max(gross_npa_pct, n = 1) |>
+  ungroup() |>
+  select(bank, peak_year = year, peak_pct = gross_npa_pct)
+
+cat("Peak year and gross NPA % per group:\n")
+peaks
+```
+
+### 8.2 Recovery Statistics
+
+```{r recovery}
+recovery <- npa_yoy |>
+  left_join(peaks, by = "bank") |>
+  filter(year > peak_year, year <= 2023) |>
+  group_by(bank) |>
+  summarise(
+    peak_year          = first(peak_year),
+    peak_pct           = first(peak_pct),
+    recovery_end_pct   = last(gross_npa_pct),
+    total_decline      = round(first(peak_pct) - last(gross_npa_pct), 2),
+    years_of_recovery  = n(),
+    avg_annual_decline = round(
+      (first(peak_pct) - last(gross_npa_pct)) / n(), 2
+    ),
+    .groups = "drop"
+  ) |>
+  arrange(desc(avg_annual_decline))
+
+cat("Recovery stats (post-peak through 2023):\n")
+recovery
+
+write.csv(recovery, "/kaggle/working/recovery_stats.csv", row.names = FALSE)
+```
+
+### 8.3 YoY Change Plot (Post-Peak)
+
+```{r plot-yoy}
+yoy_postpeak <- npa_yoy |>
+  left_join(peaks, by = "bank") |>
+  filter(year > peak_year, year <= 2023, !is.na(yoy_change)) |>
+  mutate(direction = if_else(yoy_change < 0, "Decline", "Rise"))
+
+ggplot(yoy_postpeak, aes(x = year, y = yoy_change, fill = direction)) +
+  geom_col() +
+  geom_hline(yintercept = 0, linewidth = 0.4) +
+  facet_wrap(~bank, scales = "free_x") +
+  scale_fill_manual(values = c("Decline" = "steelblue", "Rise" = "tomato")) +
+  labs(
+    title = "Year-on-Year Change in Gross NPA % (Post-Peak Recovery)",
+    x = "Year", y = "YoY Change (percentage points)", fill = NULL
+  ) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave("/kaggle/working/yoy_recovery.png", width = 12, height = 6, dpi = 150)
+```
+
+### 8.4 Indexed Recovery Plot
+
+NPA % rebased to 100 at each group's peak, making the speed of decline
+directly comparable across groups.
+
+```{r plot-indexed}
+recovery_indexed <- npa_yoy |>
+  left_join(peaks, by = "bank") |>
+  filter(year >= peak_year, year <= 2023, !is.na(gross_npa_pct)) |>
+  group_by(bank) |>
+  mutate(
+    years_since_peak = year - peak_year,
+    indexed_npa      = round((gross_npa_pct / first(gross_npa_pct)) * 100, 1)
+  ) |>
+  ungroup() |>
+  filter(bank != "Nationalised Banks")  # only 1 post-peak data point
+
+ggplot(recovery_indexed,
+       aes(x = years_since_peak, y = indexed_npa, color = bank)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.5) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "grey50") +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(limits = c(0, 105)) +
+  labs(
+    title    = "Speed of NPA Recovery: Indexed to Peak = 100",
+    subtitle = "How much of peak NPA % remains at each year after peak",
+    x = "Years Since Peak", y = "NPA % (peak = 100)", color = NULL
+  )
+
+ggsave("/kaggle/working/recovery_indexed.png", width = 10, height = 6,
+       dpi = 150)
+```
+
+---
+
+## 9. Data Quality Audit
+
+Full validation of `npa_final` before Tableau export.
+
+```{r audit}
+cat("=== 1. DIMENSIONS & STRUCTURE ===\n")
+cat("Rows:", nrow(npa_final), "| Cols:", ncol(npa_final), "\n")
+cat("Year range:", min(npa_final$year), "to", max(npa_final$year), "\n\n")
+
+cat("=== 2. MISSING YEAR × BANK COMBINATIONS ===\n")
+expand_grid(year = 2012:2025, bank = unique(npa_final$bank)) |>
+  left_join(npa_final |> mutate(exists = TRUE), by = c("year", "bank")) |>
+  filter(is.na(exists)) |>
+  print(n = Inf)
+
+cat("=== 3. net_advances > gross_advances ===\n")
+npa_final |>
+  filter(!is.na(net_advances), net_advances > gross_advances) |>
+  select(year, bank, gross_advances, net_advances, gross_npa, net_npa)
+
+cat("\n=== 4. net_npa > net_advances ===\n")
+npa_final |>
+  filter(!is.na(net_npa), !is.na(net_advances), net_npa > net_advances) |>
+  select(year, bank, net_advances, net_npa)
+
+cat("\n=== 5. gross_npa > gross_advances ===\n")
+npa_final |>
+  filter(!is.na(gross_npa), gross_npa > gross_advances) |>
+  select(year, bank, gross_advances, gross_npa)
+
+cat("\n=== 6. RATIO CONSISTENCY (recomputed vs stored) ===\n")
+npa_final |>
+  filter(!is.na(gross_npa_pct)) |>
+  mutate(
+    recomputed_pct = round((gross_npa / gross_advances) * 100, 2),
+    diff           = abs(gross_npa_pct - recomputed_pct)
+  ) |>
+  filter(diff > 0.05) |>
+  select(year, bank, gross_npa_pct, recomputed_pct, diff)
+```
+
+### 9.1 Foreign Banks Anomaly Investigation
+
+```{r foreign-banks-audit}
+cat("=== FOREIGN BANKS: source-level cross-check ===\n")
+cat("--- From NPA_13_25 ---\n")
+NPA_13_25 |>
+  filter(Banks == "FOREIGN BANKS", Year %in% c(2012, 2013, 2021, 2024)) |>
+  mutate(across(c(`Gross Advances`, `Gross NPAs`), as.numeric)) |>
+  select(Year, `Gross Advances`, `Gross NPAs`,
+         `Gross NPAs to Gross Advances Ratio (%)`)
+
+cat("\n--- From Gross_and_net_NPA (Foreign Banks block) ---\n")
+Gross_and_net_NPA[83:96, ] |>
+  filter(grepl("^\\d{4}-\\d{2}$", `Year (end-March)`)) |>
+  filter(`Year (end-March)` %in% c("2011-12", "2012-13", "2020-21", "2023-24")) |>
+  select(`Year (end-March)`, `Gross Advances`, `Net Advances`, `...7`)
+```
+
+> **Note:** For Foreign Banks in 2012 and 2013, the gross advances figures
+> differ between the two RBI source tables, indicating different reporting
+> scopes (on-balance-sheet vs total). These rows' net NPA columns are set to
+> NA in the final dataset. This is a source-level limitation, not a
+> cleaning error.
+
+### 9.2 Year-Join Mismatch Fix
+
+```{r fix-mismatches}
+mismatch_keys <- tribble(
+  ~year, ~bank,
+  2012L, "All Scheduled Commercial Banks",
+  2012L, "Foreign Banks",
+  2013L, "Foreign Banks"
+)
+
+npa_fixed <- npa_final |>
+  left_join(mismatch_keys |> mutate(mismatch = TRUE),
+            by = c("year", "bank")) |>
+  mutate(
+    net_advances = if_else(!is.na(mismatch), NA_real_, net_advances),
+    net_npa      = if_else(!is.na(mismatch), NA_real_, net_npa),
+    net_npa_pct  = if_else(!is.na(mismatch), NA_real_, net_npa_pct)
+  ) |>
+  select(-mismatch)
+
+cat("Rows affected (should be 3):\n")
+npa_fixed |>
+  filter(year %in% c(2012, 2013),
+         bank %in% c("All Scheduled Commercial Banks", "Foreign Banks")) |>
+  select(year, bank, gross_advances, net_advances, net_npa)
+```
+
+### 9.3 Add Skeleton Rows for Structural Completeness
+
+Public Sector Banks data starts from 2018 in source 2 (no earlier net NPA
+data). Nationalised Banks was discontinued after 2017 following SBI merger.
+Skeleton rows with NA values are added to maintain a complete year × bank
+grid for Tableau.
+
+```{r skeleton}
+skeleton <- bind_rows(
+  tibble(year = 2012:2017, bank = "Public Sector Banks"),
+  tibble(year = 2018:2025, bank = "Nationalised Banks")
+) |>
+  mutate(
+    gross_advances = NA_real_, gross_npa    = NA_real_,
+    net_advances   = NA_real_, net_npa      = NA_real_,
+    gross_npa_pct  = NA_real_, net_npa_pct  = NA_real_
+  )
+
+npa_fixed <- bind_rows(npa_fixed, skeleton)
+
+cat("New row count (expect 70):", nrow(npa_fixed), "\n")
+npa_fixed |> count(bank)
+```
+
+### 9.4 Final Checks
+
+```{r final-checks}
+npa_final <- npa_fixed |>
+  mutate(across(where(is.double), ~round(., 2))) |>
+  arrange(desc(year), bank)
+
+cat("=== FINAL CHECKS ===\n\n")
+cat("1. Dimensions (expect 70 x 8):", dim(npa_final), "\n\n")
+
+cat("2. net_advances > gross_advances:\n")
+npa_final |>
+  filter(!is.na(net_advances), net_advances > gross_advances) |>
+  select(year, bank, gross_advances, net_advances) |>
+  print()
+
+cat("\n3. NA summary per column:\n")
+npa_final |>
+  summarise(across(everything(), ~sum(is.na(.)))) |>
+  print(width = Inf)
+
+cat("\n4. Missing year × bank combinations:\n")
+expand_grid(year = 2012:2025, bank = unique(npa_final$bank)) |>
+  anti_join(npa_final, by = c("year", "bank")) |>
+  nrow() |>
+  cat("Missing combinations:", ... = _, "\n")
+
+write.csv(npa_final, "/kaggle/working/npa_final.csv", row.names = FALSE)
+cat("CSV re-exported.\n\n")
+print(npa_final, n = 70, width = Inf)
+```
+
+---
+
+## 10. Tableau Export
+
+Four CSV files are exported for Tableau dashboards.
+
+```{r tableau-export}
+npa_final <- read.csv("/kaggle/working/npa_final.csv")
+
+# Export 1: Trend lines
+trend_data <- npa_final |>
+  filter(!is.na(gross_npa_pct), year <= 2024) |>
+  filter(!bank %in% c("Nationalised Banks", "All Scheduled Commercial Banks")) |>
+  select(year, bank, gross_npa_pct, net_npa_pct)
+
+write.csv(trend_data, "/kaggle/working/tableau_trend.csv", row.names = FALSE)
+
+# Export 2: Pre/Post IBC comparison
+prepost_data <- npa_final |>
+  filter(!is.na(gross_npa_pct), year >= 2012, year <= 2023) |>
+  filter(bank %in% c("Public Sector Banks", "Private Sector Banks",
+                     "Foreign Banks")) |>
+  mutate(period = case_when(
+    year <= 2016 ~ "Pre-IBC (2012-16)",
+    year >= 2020 ~ "Post-IBC Recovery (2020-23)",
+    TRUE         ~ "Stress Peak (2017-19)"
+  )) |>
+  group_by(bank, period) |>
+  summarise(mean_gross_npa_pct = round(mean(gross_npa_pct), 2),
+            .groups = "drop")
+
+write.csv(prepost_data, "/kaggle/working/tableau_prepost.csv",
+          row.names = FALSE)
+
+# Export 3: Indexed recovery
+peaks <- tribble(
+  ~bank,                  ~peak_year,
+  "Public Sector Banks",  2018,
+  "Private Sector Banks", 2020,
+  "Foreign Banks",        2017
+)
+
+recovery_indexed <- npa_final |>
+  filter(!is.na(gross_npa_pct)) |>
+  inner_join(peaks, by = "bank") |>
+  filter(year >= peak_year, year <= 2023) |>
+  group_by(bank) |>
+  mutate(
+    years_since_peak = year - peak_year,
+    indexed_npa      = round((gross_npa_pct / first(gross_npa_pct)) * 100, 1)
+  ) |>
+  ungroup() |>
+  select(bank, year, years_since_peak, gross_npa_pct, indexed_npa)
+
+write.csv(recovery_indexed, "/kaggle/working/tableau_recovery.csv",
+          row.names = FALSE)
+
+# Export 4: Full clean table
+write.csv(
+  npa_final |> filter(!is.na(gross_npa_pct)),
+  "/kaggle/working/tableau_full.csv",
+  row.names = FALSE
+)
+
+cat("All 4 Tableau CSVs exported.\n")
+```
+
+---
+
+## 11. Key Findings
+
+```{r findings, echo=FALSE}
+cat("Summary of key findings from this analysis:\n\n")
+cat("1. PEAK NPA LEVELS: Public Sector Banks peaked at ~14.6% in 2018,\n")
+cat("   significantly higher than Private Sector Banks (~4.7% in 2020)\n")
+cat("   and Foreign Banks (~3.8% in 2017).\n\n")
+cat("2. IBC IMPACT: Post-IBC mean NPA ratios declined across all tested\n")
+cat("   groups. See test_results for statistical significance.\n\n")
+cat("3. RECOVERY SPEED: Foreign Banks recovered fastest in indexed terms,\n")
+cat("   followed by Public Sector Banks. See recovery_stats.csv.\n\n")
+cat("4. DATA NOTES: 3 rows (Foreign Banks 2012–2013, All SCBs 2012) have\n")
+cat("   net NPA columns set to NA due to source-level year mismatches\n")
+cat("   between the two RBI tables. Gross NPA data is unaffected.\n")
+```
+
+---
+
+*Data sources: Reserve Bank of India. Analysis by Pratham Kanbargi.*
